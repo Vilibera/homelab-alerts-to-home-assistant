@@ -1,0 +1,98 @@
+# Homelab alerts -> phone notifications through Home Assistant.
+# https://github.com/Vilibera/homelab-alerts-to-home-assistant
+#
+# Include it in configuration.yaml (a separate file keeps the UI editor from rewriting !secret):
+#   automation homelab: !include homelab_alerts.yaml
+#
+# Sources POST JSON to http://<home-assistant>:8123/api/webhook/<ID>:
+#   1. Prometheus Alertmanager (webhook receiver)
+#   2. Proxmox VE (notification target "Webhook")
+#   3. Diun (webhook notifier)
+# Anything else still reaches you, as a raw message.
+#
+# Put the webhook ID in secrets.yaml as `homelab_alert_webhook_id`. Use a long random string,
+# because anyone who knows it can send you notifications.
+# Replace notify.mobile_app_your_phone with your own notify service.
+
+- id: homelab_alerts
+  alias: Homelab alerts
+  description: Alertmanager, Proxmox and Diun notifications to the phone
+  mode: queued
+  max: 20
+  triggers:
+    - trigger: webhook
+      webhook_id: !secret homelab_alert_webhook_id
+      allowed_methods: [POST]
+      local_only: true
+  actions:
+    - variables:
+        j: "{{ trigger.json if trigger.json is mapping else {} }}"
+    - choose:
+        # 1) Alertmanager: one notification per alert
+        - conditions: "{{ j.alerts is defined }}"
+          sequence:
+            - repeat:
+                for_each: "{{ j.alerts }}"
+                sequence:
+                  - variables:
+                      a: "{{ repeat.item }}"
+                      lbl: "{{ a.labels | default({}) }}"
+                      ann: "{{ a.annotations | default({}) }}"
+                      resolved: "{{ a.status | default(j.status) == 'resolved' }}"
+                      sev: "{{ lbl.severity | default('warning') }}"
+                      urgent: "{{ sev == 'critical' and not resolved }}"
+                  - action: notify.mobile_app_your_phone
+                    data:
+                      title: >-
+                        {{ '✅' if resolved else ('🔴' if sev == 'critical' else ('ℹ️' if sev == 'info' else '🟡')) }}
+                        {{ ann.summary | default(lbl.alertname | default('Homelab alert')) }}
+                      message: >-
+                        {{ 'Resolved.' if resolved else (ann.description | default(ann.summary | default(lbl.alertname | default('')))) }}
+                      data:
+                        # Same tag = the "resolved" message replaces the original one
+                        tag: "homelab-{{ lbl.alertname | default('') }}-{{ lbl.instance | default('') }}{{ lbl.repo | default('') }}{{ lbl.vmid | default('') }}"
+                        group: homelab
+                        channel: "{{ 'Homelab critical' if urgent else 'Homelab' }}"
+                        importance: "{{ 'high' if urgent else 'default' }}"
+                        priority: "{{ 'high' if urgent else 'normal' }}"
+                        ttl: 0
+                        push:
+                          interruption-level: "{{ 'time-sensitive' if urgent else 'passive' }}"
+        # 2) Proxmox: failed backup jobs and other errors
+        - conditions: "{{ j.source | default('') == 'proxmox' }}"
+          sequence:
+            - action: notify.mobile_app_your_phone
+              data:
+                title: "{{ '🔴' if j.severity | default('') == 'error' else '🟡' }} Proxmox: {{ j.title | default('notification') }}"
+                message: "{{ (j.message | default('') | string)[:500] }}"
+                data:
+                  group: homelab
+                  tag: homelab-proxmox
+                  channel: "{{ 'Homelab critical' if j.severity | default('') == 'error' else 'Homelab' }}"
+                  priority: "{{ 'high' if j.severity | default('') == 'error' else 'normal' }}"
+                  ttl: 0
+        # 3) Diun: new container image versions
+        - conditions: "{{ j.diun_version is defined }}"
+          sequence:
+            - variables:
+                image: "{{ j.image | default('?') }}"
+                name: "{{ j.metadata.ctn_names if j.metadata is mapping and j.metadata.ctn_names is defined else image.split('/')[-1] }}"
+            - action: notify.mobile_app_your_phone
+              data:
+                title: "⬆️ New version: {{ name }}"
+                message: "{{ image }} ({{ 'new' if j.status | default('') == 'new' else 'update' }}) – {{ j.hostname | default('') }}"
+                data:
+                  group: homelab-updates
+                  tag: "diun-{{ image }}"
+                  channel: Homelab updates
+                  url: "{{ j.hub_link | default('') }}"
+                  clickAction: "{{ j.hub_link | default('') }}"
+      # Unknown payload: notify anyway so nothing gets lost
+      default:
+        - action: notify.mobile_app_your_phone
+          data:
+            title: "❔ Homelab notification"
+            message: "{{ (trigger.json | default(trigger.data) | string)[:400] }}"
+            data:
+              group: homelab
+              tag: homelab-unknown

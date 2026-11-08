@@ -1,0 +1,34 @@
+# A few starter Prometheus alert rules that pair well with the automation.
+# `summary` becomes the notification title and `description` the body.
+groups:
+  - name: homelab
+    rules:
+      - alert: HostDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }} is down"
+          description: "node_exporter on {{ $labels.instance }} has not answered for 2 minutes."
+
+      - alert: DiskAlmostFull
+        expr: 100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) > 90
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} is {{ $value | humanize }}% full"
+          description: "{{ $labels.instance }}: {{ $labels.mountpoint }} is running out of space."
+
+      - alert: SmartUnhealthy
+        expr: smartmon_device_smart_healthy == 0
+        labels: { severity: critical }
+        annotations:
+          summary: "SMART failure on {{ $labels.disk }}"
+          description: "{{ $labels.instance }}: replace {{ $labels.disk }} soon."
+
+      - alert: BorgBackupStale
+        expr: time() - homelab_borg_backup_last_success_timestamp_seconds > 26 * 3600
+        labels: { severity: warning }
+        annotations:
+          summary: "Borg backup of {{ $labels.repo }} is stale"
+          description: "No successful backup for more than 26 hours."

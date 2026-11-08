@@ -1,0 +1,8 @@
+# Diun: notify about new container image versions through the same webhook.
+notif:
+  webhook:
+    endpoint: http://HOME_ASSISTANT:8123/api/webhook/YOUR_WEBHOOK_ID
+    method: POST
+    headers:
+      content-type: application/json
+    timeout: 10s
